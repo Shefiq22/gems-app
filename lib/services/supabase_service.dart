@@ -13,7 +13,7 @@ const String _supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOi
 
 // ── REDIRECT URL ─────────────────────────────────────────────
 // Also add this in: Supabase → Authentication → URL Configuration
-const String _webRedirectUrl = 'http://localhost:8080/#/reset-password';
+const String _webRedirectUrl = 'https://gems-app-eight.vercel.app/#/reset-password';
 
 class SupabaseService {
   // ── CONFIG ───────────────────────────────────────────────
