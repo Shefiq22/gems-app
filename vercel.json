@@ -1,0 +1,8 @@
+{
+  "buildCommand": "flutter build web",
+  "outputDirectory": "build/web",
+  "devCommand": "flutter run -d chrome",
+  "routes": [
+    { "src": "/(.*)", "dest": "/index.html" }
+  ]
+}

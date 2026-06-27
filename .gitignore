@@ -1,0 +1,49 @@
+# Flutter
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+build/
+flutter_*.png
+
+# Android
+*.iml
+*.gradle
+local.properties
+.gradle
+.idea
+*.swp
+*.lock
+*.log
+
+# iOS
+**/ios/**/*.mode1v3
+**/ios/**/*.mode2v3
+**/ios/**/*.moved-aside
+**/ios/**/*.pbxuser
+**/ios/**/*.perspectivev3
+**/ios/**/*~
+**/ios/**/project.xcworkspace/xcuserdata/
+**/ios/**/Pods/
+*.xcuserstate
+
+# Web
+build/web/
+
+# VS Code
+.vscode/
+
+# Mac
+.DS_Store
+
+# Firebase
+firebase-debug.log
+
+# Vercel
+.vercel
+
+# Node
+node_modules/
+flutter/
