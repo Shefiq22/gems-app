@@ -31,5 +31,3 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
-dependency_overrides:
-  postgrest: 2.6.0

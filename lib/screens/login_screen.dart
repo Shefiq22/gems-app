@@ -1,8 +1,8 @@
 // ============================================================
-//  GEMS — Login Screen (UPDATED)
-//  - Sign-up captures full name + role + faculty (if needed)
-//  - Role selector routes to appropriate dashboard on login
-//  - Beautiful animated landing with parallax + floating leaves
+//  GEMS — Login Screen
+//  - Role selector validates against actual Supabase profile
+//  - Benchmark bar loaded LIVE from faculties table
+//  - No hardcoded scores anywhere
 // ============================================================
 
 import 'package:flutter/material.dart';
@@ -15,7 +15,6 @@ import 'dart:math' as math;
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
-
   @override
   State<LoginScreen> createState() => _LoginScreenState();
 }
@@ -26,22 +25,24 @@ class _LoginScreenState extends State<LoginScreen>
   late AnimationController _bgController;
   late AnimationController _pulseController;
 
-  final _emailCtrl      = TextEditingController();
-  final _passCtrl       = TextEditingController();
-  final _confirmCtrl    = TextEditingController();
-  final _fullNameCtrl   = TextEditingController();
+  final _emailCtrl    = TextEditingController();
+  final _passCtrl     = TextEditingController();
+  final _confirmCtrl  = TextEditingController();
+  final _fullNameCtrl = TextEditingController();
 
-  bool   _obscure   = true;
-  bool   _loading   = false;
-  bool   _isSignUp  = false;
+  bool   _obscure  = true;
+  bool   _loading  = false;
+  bool   _isSignUp = false;
 
-  // Role for both sign-in hint and sign-up
   String _selectedRole      = 'admin';
   String _selectedFacultyId = 'nas';
 
   Offset _mousePosition = Offset.zero;
   final List<_FloatingLeaf> _leaves =
       List.generate(18, (i) => _FloatingLeaf(i));
+
+  // Live faculty scores for benchmark bar — no hardcoding
+  List<_FacultyBar> _liveBars = [];
 
   static const _roles = [
     ('admin',           'University Admin'),
@@ -57,6 +58,13 @@ class _LoginScreenState extends State<LoginScreen>
     ('med', 'Medical Science'),
   ];
 
+  static const _facultyColors = {
+    'nas': Color(0xFFD32F2F),
+    'es':  Color(0xFF388E3C),
+    'eng': Color(0xFFE65100),
+    'med': Color(0xFF1565C0),
+  };
+
   @override
   void initState() {
     super.initState();
@@ -69,6 +77,29 @@ class _LoginScreenState extends State<LoginScreen>
     _pulseController = AnimationController(
         vsync: this, duration: const Duration(seconds: 3))
       ..repeat(reverse: true);
+
+    _loadLiveFacultyScores();
+  }
+
+  /// Fetch real GHI scores from Supabase for the benchmark bar.
+  Future<void> _loadLiveFacultyScores() async {
+    if (!SupabaseService.isConfigured) return;
+    try {
+      final raw = await SupabaseService.getFaculties();
+      if (!mounted) return;
+      setState(() {
+        _liveBars = raw.map((f) {
+          final id    = f['id'] as String? ?? '';
+          final score = (f['green_health_score'] as num?)?.toDouble() ?? 0;
+          final name  = f['short_name'] as String? ?? id.toUpperCase();
+          final color = _facultyColors[id] ?? GEMSTheme.accentGreen;
+          return _FacultyBar(name, score / 100, color);
+        }).toList();
+      });
+    } catch (_) {
+      // If not logged in yet, Supabase may reject — that's fine,
+      // the bar just stays empty until data loads.
+    }
   }
 
   @override
@@ -127,44 +158,22 @@ class _LoginScreenState extends State<LoginScreen>
           _fullNameCtrl.clear();
         });
       } else {
-        final user =
-            await SupabaseService.signIn(email, password);
-        if (user != null && mounted) {
-          _navigateByRole();
+        // ── Role-validating sign in ──
+        await SupabaseService.signInWithRoleCheck(
+          email,
+          password,
+          _selectedRole,
+        );
+        if (mounted) {
+          Navigator.pushReplacementNamed(context, '/dashboard');
         }
       }
     } catch (e) {
       if (!mounted) return;
-      _showError(_extractError(e));
+      _showError(e.toString().replaceAll('Exception: ', ''));
     } finally {
       if (mounted) setState(() => _loading = false);
     }
-  }
-
-  void _navigateByRole() {
-    // In demo mode the role comes from _selectedRole picker
-    // In real mode it comes from user metadata
-    final role = SupabaseService.isConfigured
-        ? SupabaseService.currentRole
-        : _selectedRole;
-
-    if (!mounted) return;
-    // All roles go to DashboardScreen — the dashboard itself
-    // adapts its UI and available sections based on the role.
-    Navigator.pushReplacementNamed(context, '/dashboard');
-  }
-
-  String _extractError(Object e) {
-    final s = e.toString();
-    if (s.contains('Invalid login credentials'))
-      return 'Invalid email or password.';
-    if (s.contains('Email not confirmed'))
-      return 'Please confirm your email first.';
-    if (s.contains('User already registered'))
-      return 'An account with this email already exists.';
-    if (s.contains('Password should be'))
-      return 'Password must be at least 6 characters.';
-    return s.replaceAll('Exception: ', '');
   }
 
   void _showError(String msg) {
@@ -173,8 +182,9 @@ class _LoginScreenState extends State<LoginScreen>
           Text(msg, style: const TextStyle(color: Colors.white)),
       backgroundColor: GEMSTheme.danger,
       behavior: SnackBarBehavior.floating,
-      shape:
-          RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12)),
+      duration: const Duration(seconds: 5),
     ));
   }
 
@@ -184,12 +194,12 @@ class _LoginScreenState extends State<LoginScreen>
           Text(msg, style: const TextStyle(color: Colors.white)),
       backgroundColor: GEMSTheme.success,
       behavior: SnackBarBehavior.floating,
-      shape:
-          RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12)),
+      duration: const Duration(seconds: 6),
     ));
   }
 
-  // ── Build ────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -243,7 +253,7 @@ class _LoginScreenState extends State<LoginScreen>
               final y = -60.0 + t * (size.height + 120);
               return Positioned(
                 left: x,
-                top: y,
+                top:  y,
                 child: Transform.rotate(
                   angle: t * leaf.rotSpeed * math.pi * 4,
                   child: Opacity(
@@ -258,149 +268,174 @@ class _LoginScreenState extends State<LoginScreen>
         },
       );
 
-  Widget _buildContent() {
-    return Row(
-      children: [
-        // ── Left hero panel ──
-        Expanded(
-          flex: 5,
-          child: LayoutBuilder(
-            builder: (context, c) => SingleChildScrollView(
-              child: ConstrainedBox(
-                constraints: BoxConstraints(minHeight: c.maxHeight),
-                child: Padding(
-                  padding: const EdgeInsets.all(60),
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      // Logo
-                      Row(
-                        children: [
-                          Container(
-                            width: 56,
-                            height: 56,
-                            decoration: BoxDecoration(
-                              color: Colors.white.withOpacity(0.15),
-                              borderRadius: BorderRadius.circular(16),
-                              border: Border.all(
-                                  color:
-                                      Colors.white.withOpacity(0.3)),
+  Widget _buildContent() => Row(
+        children: [
+          // ── Left hero ──
+          Expanded(
+            flex: 5,
+            child: LayoutBuilder(
+              builder: (context, c) => SingleChildScrollView(
+                child: ConstrainedBox(
+                  constraints:
+                      BoxConstraints(minHeight: c.maxHeight),
+                  child: Padding(
+                    padding: const EdgeInsets.all(60),
+                    child: Column(
+                      mainAxisAlignment:
+                          MainAxisAlignment.center,
+                      crossAxisAlignment:
+                          CrossAxisAlignment.start,
+                      children: [
+                        // Logo
+                        Row(
+                          children: [
+                            Container(
+                              width: 56, height: 56,
+                              decoration: BoxDecoration(
+                                color: Colors.white
+                                    .withOpacity(0.15),
+                                borderRadius:
+                                    BorderRadius.circular(16),
+                                border: Border.all(
+                                    color: Colors.white
+                                        .withOpacity(0.3)),
+                              ),
+                              child: const Icon(Icons.eco,
+                                  color: Colors.white, size: 30),
                             ),
-                            child: const Icon(Icons.eco,
-                                color: Colors.white, size: 30),
-                          ),
-                          const SizedBox(width: 16),
-                          Column(
-                            crossAxisAlignment:
-                                CrossAxisAlignment.start,
-                            children: [
-                              Text('GEMS',
-                                  style: GoogleFonts.playfairDisplay(
+                            const SizedBox(width: 16),
+                            Column(
+                              crossAxisAlignment:
+                                  CrossAxisAlignment.start,
+                              children: [
+                                Text('GEMS',
+                                    style: GoogleFonts
+                                        .playfairDisplay(
                                       color: Colors.white,
                                       fontSize: 28,
                                       fontWeight:
-                                          FontWeight.w800)),
-                              Text('Abiola Ajimobi University',
-                                  style: GoogleFonts.poppins(
-                                      color: Colors.white70,
-                                      fontSize: 11,
-                                      letterSpacing: 1.2)),
-                            ],
+                                          FontWeight.w800,
+                                    )),
+                                Text(
+                                    'Abiola Ajimobi University',
+                                    style: GoogleFonts.poppins(
+                                        color: Colors.white70,
+                                        fontSize: 11,
+                                        letterSpacing: 1.2)),
+                              ],
+                            ),
+                          ],
+                        ).animate().fadeIn(duration: 600.ms)
+                            .slideX(begin: -0.3),
+
+                        const SizedBox(height: 80),
+
+                        Text(
+                          'Nurturing\nNature,\nShaping Tomorrow.',
+                          style: GoogleFonts.playfairDisplay(
+                            color: Colors.white,
+                            fontSize: 52,
+                            fontWeight: FontWeight.w800,
+                            height: 1.1,
                           ),
-                        ],
-                      ).animate().fadeIn(duration: 600.ms).slideX(begin: -0.3),
+                        ).animate()
+                            .fadeIn(delay: 200.ms, duration: 800.ms)
+                            .slideY(begin: 0.3),
 
-                      const SizedBox(height: 80),
+                        const SizedBox(height: 24),
 
-                      Text(
-                        'Nurturing\nNature,\nShaping Tomorrow.',
-                        style: GoogleFonts.playfairDisplay(
-                          color: Colors.white,
-                          fontSize: 52,
-                          fontWeight: FontWeight.w800,
-                          height: 1.1,
-                        ),
-                      ).animate().fadeIn(delay: 200.ms, duration: 800.ms).slideY(begin: 0.3),
+                        Text(
+                          'Monitor, manage, and transform the green '
+                          'landscape of your university — faculty by faculty.',
+                          style: GoogleFonts.poppins(
+                              color: Colors.white60,
+                              fontSize: 16,
+                              height: 1.7),
+                        ).animate()
+                            .fadeIn(delay: 400.ms, duration: 800.ms),
 
-                      const SizedBox(height: 24),
+                        const SizedBox(height: 60),
 
-                      Text(
-                        'Monitor, manage, and transform the green landscape of your university — faculty by faculty.',
-                        style: GoogleFonts.poppins(
-                            color: Colors.white60,
-                            fontSize: 16,
-                            height: 1.7),
-                      ).animate().fadeIn(delay: 400.ms, duration: 800.ms),
+                        // Stat pills — these still come from
+                        // the university_settings table via
+                        // the dashboard; on the login page
+                        // we show known-stable facts only.
+                        const Row(
+                          children: [
+                            _StatPill(label: '4',  sub: 'Faculties'),
+                            SizedBox(width: 20),
+                            _StatPill(label: '47', sub: 'Hectares'),
+                            SizedBox(width: 20),
+                            _StatPill(label: '15', sub: 'Years Young'),
+                          ],
+                        ).animate()
+                            .fadeIn(delay: 600.ms, duration: 800.ms),
 
-                      const SizedBox(height: 60),
+                        const SizedBox(height: 50),
 
-                      const Row(
-                        children: [
-                          _StatPill(label: '4', sub: 'Faculties'),
-                          SizedBox(width: 20),
-                          _StatPill(label: '47', sub: 'Hectares'),
-                          SizedBox(width: 20),
-                          _StatPill(label: '15', sub: 'Years Young'),
-                        ],
-                      ).animate().fadeIn(delay: 600.ms, duration: 800.ms),
-
-                      const SizedBox(height: 50),
-
-                      AnimatedBuilder(
-                        animation: _pulseController,
-                        builder: (_, __) => _BenchmarkBar(
-                            pulse: _pulseController.value),
-                      ).animate().fadeIn(delay: 800.ms),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ),
-
-        // ── Right login card ──
-        Expanded(
-          flex: 4,
-          child: LayoutBuilder(
-            builder: (context, c) => SingleChildScrollView(
-              child: ConstrainedBox(
-                constraints: BoxConstraints(minHeight: c.maxHeight),
-                child: Center(
-                  child: Container(
-                    width: 460,
-                    margin: const EdgeInsets.symmetric(
-                        vertical: 40, horizontal: 40),
-                    padding: const EdgeInsets.all(44),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(28),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withOpacity(0.3),
-                          blurRadius: 60,
-                          spreadRadius: 10,
-                        ),
+                        // ── LIVE benchmark bar ──
+                        if (_liveBars.isNotEmpty)
+                          AnimatedBuilder(
+                            animation: _pulseController,
+                            builder: (_, __) => _LiveBenchmarkBar(
+                              bars:  _liveBars,
+                              pulse: _pulseController.value,
+                            ),
+                          ).animate().fadeIn(delay: 800.ms)
+                        else
+                          // Skeleton while loading
+                          _BenchmarkSkeleton()
+                              .animate().fadeIn(delay: 800.ms),
                       ],
                     ),
-                    child: _buildForm(),
                   ),
                 ),
               ),
             ),
           ),
-        ).animate().fadeIn(delay: 300.ms, duration: 800.ms).slideX(begin: 0.3),
-      ],
-    );
-  }
+
+          // ── Right login card ──
+          Expanded(
+            flex: 4,
+            child: LayoutBuilder(
+              builder: (context, c) => SingleChildScrollView(
+                child: ConstrainedBox(
+                  constraints:
+                      BoxConstraints(minHeight: c.maxHeight),
+                  child: Center(
+                    child: Container(
+                      width: 460,
+                      margin: const EdgeInsets.symmetric(
+                          vertical: 40, horizontal: 40),
+                      padding: const EdgeInsets.all(44),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(28),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withOpacity(0.3),
+                            blurRadius: 60,
+                            spreadRadius: 10,
+                          ),
+                        ],
+                      ),
+                      child: _buildForm(),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ).animate()
+              .fadeIn(delay: 300.ms, duration: 800.ms)
+              .slideX(begin: 0.3),
+        ],
+      );
 
   Widget _buildForm() {
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Title
         Text(
           _isSignUp ? 'Create Account' : 'Welcome Back',
           style: GoogleFonts.playfairDisplay(
@@ -418,7 +453,7 @@ class _LoginScreenState extends State<LoginScreen>
         ),
         const SizedBox(height: 28),
 
-        // ── ROLE SELECTOR (both sign-in and sign-up) ──
+        // Role selector
         Text('I am a...',
             style: GoogleFonts.poppins(
                 fontSize: 12,
@@ -426,8 +461,7 @@ class _LoginScreenState extends State<LoginScreen>
                 letterSpacing: 1)),
         const SizedBox(height: 10),
         Wrap(
-          spacing: 6,
-          runSpacing: 6,
+          spacing: 6, runSpacing: 6,
           children: _roles.map((r) {
             final selected = _selectedRole == r.$1;
             return GestureDetector(
@@ -458,9 +492,36 @@ class _LoginScreenState extends State<LoginScreen>
             );
           }).toList(),
         ),
+
+        // Role hint (sign-in only)
+        if (!_isSignUp) ...[
+          const SizedBox(height: 8),
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: GEMSTheme.primaryGreen.withOpacity(0.06),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Row(children: [
+              const Icon(Icons.info_outline,
+                  size: 14, color: GEMSTheme.primaryGreen),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Select the role you signed up with. '
+                  'Wrong role = access denied.',
+                  style: GoogleFonts.poppins(
+                      fontSize: 10,
+                      color: GEMSTheme.primaryGreen),
+                ),
+              ),
+            ]),
+          ),
+        ],
+
         const SizedBox(height: 20),
 
-        // ── FULL NAME (sign-up only) ──
+        // Full name (sign-up only)
         if (_isSignUp) ...[
           _InputField(
             controller: _fullNameCtrl,
@@ -471,7 +532,7 @@ class _LoginScreenState extends State<LoginScreen>
           const SizedBox(height: 14),
         ],
 
-        // ── FACULTY (sign-up, officer/groundskeeper only) ──
+        // Faculty (sign-up, officer/groundskeeper)
         if (_isSignUp &&
             (_selectedRole == 'faculty_officer' ||
                 _selectedRole == 'groundskeeper')) ...[
@@ -508,7 +569,7 @@ class _LoginScreenState extends State<LoginScreen>
           const SizedBox(height: 14),
         ],
 
-        // ── EMAIL ──
+        // Email
         _InputField(
           controller: _emailCtrl,
           label: 'Email Address',
@@ -517,7 +578,7 @@ class _LoginScreenState extends State<LoginScreen>
         ),
         const SizedBox(height: 14),
 
-        // ── PASSWORD ──
+        // Password
         _InputField(
           controller: _passCtrl,
           label: 'Password',
@@ -537,7 +598,7 @@ class _LoginScreenState extends State<LoginScreen>
           ),
         ),
 
-        // ── CONFIRM PASSWORD (sign-up) ──
+        // Confirm password (sign-up)
         if (_isSignUp) ...[
           const SizedBox(height: 14),
           _InputField(
@@ -549,7 +610,7 @@ class _LoginScreenState extends State<LoginScreen>
           ),
         ],
 
-        // ── FORGOT PASSWORD (sign-in) ──
+        // Forgot password
         if (!_isSignUp) ...[
           const SizedBox(height: 8),
           Align(
@@ -570,17 +631,15 @@ class _LoginScreenState extends State<LoginScreen>
 
         const SizedBox(height: 20),
 
-        // ── SUBMIT ──
         _HoverButton(
           loading: _loading,
           label: _isSignUp ? 'Create Account' : 'Enter GEMS',
-          icon: _isSignUp ? Icons.person_add_alt_1 : Icons.eco,
+          icon:  _isSignUp ? Icons.person_add_alt_1 : Icons.eco,
           onTap: _submit,
         ),
 
         const SizedBox(height: 20),
 
-        // ── TOGGLE ──
         Center(
           child: TextButton(
             onPressed: () => setState(() {
@@ -613,7 +672,121 @@ class _LoginScreenState extends State<LoginScreen>
   }
 }
 
-// ── HELPER WIDGETS ────────────────────────────────────────────
+// ── DATA MODEL ───────────────────────────────────────────────
+
+class _FacultyBar {
+  final String name;
+  final double fraction; // 0.0 – 1.0
+  final Color  color;
+  const _FacultyBar(this.name, this.fraction, this.color);
+}
+
+// ── LIVE BENCHMARK BAR ────────────────────────────────────────
+
+class _LiveBenchmarkBar extends StatelessWidget {
+  final List<_FacultyBar> bars;
+  final double pulse;
+  const _LiveBenchmarkBar(
+      {required this.bars, required this.pulse});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('LIVE GREEN HEALTH INDEX',
+            style: GoogleFonts.poppins(
+                color: Colors.white38,
+                fontSize: 11,
+                letterSpacing: 1.8)),
+        const SizedBox(height: 12),
+        ...bars.map((f) => Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Row(
+                children: [
+                  SizedBox(
+                    width: 40,
+                    child: Text(f.name,
+                        style: GoogleFonts.poppins(
+                            color: Colors.white60,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600)),
+                  ),
+                  Expanded(
+                    child: Stack(children: [
+                      Container(
+                        height: 8,
+                        decoration: BoxDecoration(
+                          color: Colors.white.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                      ),
+                      FractionallySizedBox(
+                        widthFactor: f.fraction.clamp(0.0, 1.0),
+                        child: Container(
+                          height: 8,
+                          decoration: BoxDecoration(
+                            color: f.color,
+                            borderRadius:
+                                BorderRadius.circular(4),
+                            boxShadow: [
+                              BoxShadow(
+                                color: f.color.withOpacity(
+                                    0.4 + pulse * 0.2),
+                                blurRadius: 8,
+                              )
+                            ],
+                          ),
+                        ),
+                      ),
+                    ]),
+                  ),
+                  const SizedBox(width: 12),
+                  Text('${(f.fraction * 100).toInt()}',
+                      style: GoogleFonts.poppins(
+                          color: Colors.white70,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600)),
+                ],
+              ),
+            )),
+      ],
+    );
+  }
+}
+
+class _BenchmarkSkeleton extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('LOADING CAMPUS GHI…',
+            style: GoogleFonts.poppins(
+                color: Colors.white38,
+                fontSize: 11,
+                letterSpacing: 1.8)),
+        const SizedBox(height: 12),
+        ...List.generate(4, (i) => Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: Row(children: [
+            Container(width: 30, height: 10,
+                decoration: BoxDecoration(
+                  color: Colors.white12,
+                  borderRadius: BorderRadius.circular(4))),
+            const SizedBox(width: 12),
+            Expanded(child: Container(height: 8,
+                decoration: BoxDecoration(
+                  color: Colors.white12,
+                  borderRadius: BorderRadius.circular(4)))),
+          ]),
+        )),
+      ],
+    );
+  }
+}
+
+// ── HELPERS ───────────────────────────────────────────────────
 
 class _FloatingLeaf {
   late double startX, offset, wobble, rotSpeed, size, opacity;
@@ -626,10 +799,8 @@ class _FloatingLeaf {
     rotSpeed = (r.nextDouble() - 0.5) * 2;
     size     = 10 + r.nextDouble() * 18;
     opacity  = 0.04 + r.nextDouble() * 0.12;
-    final icons = [
-      Icons.eco, Icons.spa, Icons.local_florist,
-      Icons.grass, Icons.nature
-    ];
+    final icons = [Icons.eco, Icons.spa, Icons.local_florist,
+                   Icons.grass, Icons.nature];
     icon = icons[seed % icons.length];
   }
 }
@@ -645,11 +816,9 @@ class _GridPainter extends CustomPainter {
       canvas.drawLine(Offset(x, 0), Offset(x, size.height), paint);
     }
     for (double y = 0; y < size.height; y += spacing) {
-      canvas.drawLine(
-          Offset(0, y), Offset(size.width, y), paint);
+      canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
     }
   }
-
   @override
   bool shouldRepaint(_) => false;
 }
@@ -657,7 +826,6 @@ class _GridPainter extends CustomPainter {
 class _StatPill extends StatelessWidget {
   final String label, sub;
   const _StatPill({required this.label, required this.sub});
-
   @override
   Widget build(BuildContext context) => Container(
         padding: const EdgeInsets.symmetric(
@@ -668,97 +836,17 @@ class _StatPill extends StatelessWidget {
           border: Border.all(
               color: Colors.white.withOpacity(0.2)),
         ),
-        child: Column(
-          children: [
-            Text(label,
-                style: GoogleFonts.poppins(
-                    color: Colors.white,
-                    fontSize: 22,
-                    fontWeight: FontWeight.w700)),
-            Text(sub,
-                style: GoogleFonts.poppins(
-                    color: Colors.white60, fontSize: 11)),
-          ],
-        ),
+        child: Column(children: [
+          Text(label,
+              style: GoogleFonts.poppins(
+                  color: Colors.white,
+                  fontSize: 22,
+                  fontWeight: FontWeight.w700)),
+          Text(sub,
+              style: GoogleFonts.poppins(
+                  color: Colors.white60, fontSize: 11)),
+        ]),
       );
-}
-
-class _BenchmarkBar extends StatelessWidget {
-  final double pulse;
-  const _BenchmarkBar({required this.pulse});
-
-  @override
-  Widget build(BuildContext context) {
-    final faculties = [
-      ('NAS', 0.22, const Color(0xFFD32F2F)),
-      ('ENV', 0.78, const Color(0xFF388E3C)),
-      ('ENG', 0.28, const Color(0xFFE65100)),
-      ('MED', 0.51, const Color(0xFF1565C0)),
-    ];
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text('LIVE GREEN HEALTH INDEX',
-            style: GoogleFonts.poppins(
-                color: Colors.white38,
-                fontSize: 11,
-                letterSpacing: 1.8)),
-        const SizedBox(height: 12),
-        ...faculties.map((f) => Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: Row(
-                children: [
-                  SizedBox(
-                    width: 40,
-                    child: Text(f.$1,
-                        style: GoogleFonts.poppins(
-                            color: Colors.white60,
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600)),
-                  ),
-                  Expanded(
-                    child: Stack(
-                      children: [
-                        Container(
-                          height: 8,
-                          decoration: BoxDecoration(
-                            color: Colors.white.withOpacity(0.1),
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                        ),
-                        FractionallySizedBox(
-                          widthFactor: f.$2,
-                          child: Container(
-                            height: 8,
-                            decoration: BoxDecoration(
-                              color: f.$3,
-                              borderRadius:
-                                  BorderRadius.circular(4),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: f.$3.withOpacity(
-                                      0.4 + pulse * 0.2),
-                                  blurRadius: 8,
-                                )
-                              ],
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Text('${(f.$2 * 100).toInt()}',
-                      style: GoogleFonts.poppins(
-                          color: Colors.white70,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600)),
-                ],
-              ),
-            )),
-      ],
-    );
-  }
 }
 
 class _InputField extends StatefulWidget {
@@ -767,7 +855,6 @@ class _InputField extends StatefulWidget {
   final IconData icon;
   final bool obscure;
   final Widget? suffix;
-
   const _InputField({
     required this.controller,
     required this.label,
@@ -776,14 +863,12 @@ class _InputField extends StatefulWidget {
     this.obscure = false,
     this.suffix,
   });
-
   @override
   State<_InputField> createState() => _InputFieldState();
 }
 
 class _InputFieldState extends State<_InputField> {
   bool _focused = false;
-
   @override
   Widget build(BuildContext context) {
     return Column(
@@ -810,7 +895,8 @@ class _InputFieldState extends State<_InputField> {
                 : Colors.grey.shade50,
           ),
           child: Focus(
-            onFocusChange: (f) => setState(() => _focused = f),
+            onFocusChange: (f) =>
+                setState(() => _focused = f),
             child: TextField(
               controller: widget.controller,
               obscureText: widget.obscure,
@@ -848,19 +934,17 @@ class _HoverButton extends StatefulWidget {
       required this.label,
       required this.icon,
       required this.onTap});
-
   @override
   State<_HoverButton> createState() => _HoverButtonState();
 }
 
 class _HoverButtonState extends State<_HoverButton> {
   bool _hovered = false;
-
   @override
   Widget build(BuildContext context) {
     return MouseRegion(
       onEnter: (_) => setState(() => _hovered = true),
-      onExit: (_) => setState(() => _hovered = false),
+      onExit:  (_) => setState(() => _hovered = false),
       child: GestureDetector(
         onTap: widget.loading ? null : widget.onTap,
         child: AnimatedContainer(
@@ -886,13 +970,13 @@ class _HoverButtonState extends State<_HoverButton> {
           child: Center(
             child: widget.loading
                 ? const SizedBox(
-                    width: 22,
-                    height: 22,
+                    width: 22, height: 22,
                     child: CircularProgressIndicator(
                         strokeWidth: 2, color: Colors.white),
                   )
                 : Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
+                    mainAxisAlignment:
+                        MainAxisAlignment.center,
                     children: [
                       Icon(widget.icon,
                           color: Colors.white, size: 18),
@@ -909,7 +993,8 @@ class _HoverButtonState extends State<_HoverButton> {
                             : Offset.zero,
                         duration:
                             const Duration(milliseconds: 200),
-                        child: const Icon(Icons.arrow_forward,
+                        child: const Icon(
+                            Icons.arrow_forward,
                             color: Colors.white, size: 18),
                       ),
                     ],

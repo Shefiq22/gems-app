@@ -45,3 +45,4 @@ firebase-debug.log
 # Node
 node_modules/
 flutter/
+!build/web

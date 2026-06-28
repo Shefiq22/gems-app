@@ -1,22 +1,15 @@
 // ============================================================
 //  GEMS — Supabase Service  (LIVE ONLY — zero mock data)
-//  Replace the two constants below with your real values:
-//    Supabase Dashboard → Settings → API
 // ============================================================
 
 import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-// ── YOUR CREDENTIALS ────────────────────────────────────────
 const String _supabaseUrl     = 'https://hrblmwvwrzhgzdsxwiat.supabase.co';
 const String _supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhyYmxtd3Z3cnpoZ3pkc3h3aWF0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI0MTUzNjcsImV4cCI6MjA5Nzk5MTM2N30.xgM7GQ6W-qInDkG-F3P-FliUwWoPG4e_agDREetc6dA';
-
-// ── REDIRECT URL ─────────────────────────────────────────────
-// Also add this in: Supabase → Authentication → URL Configuration
-const String _webRedirectUrl = 'https://gems-app-eight.vercel.app/#/reset-password';
+const String _webRedirectUrl  = 'https://gems-app-eight.vercel.app/#/reset-password';
 
 class SupabaseService {
-  // ── CONFIG ───────────────────────────────────────────────
   static bool get isConfigured =>
       !_supabaseUrl.contains('YOUR_PROJECT_ID') &&
       !_supabaseAnonKey.startsWith('YOUR_');
@@ -29,18 +22,75 @@ class SupabaseService {
   // ── INIT ─────────────────────────────────────────────────
   static Future<void> initialize() async {
     if (!isConfigured) {
-      debugPrint('⚠️  GEMS: Paste your Supabase URL and anon key in supabase_service.dart');
+      debugPrint('⚠️  GEMS: Configure Supabase credentials');
       return;
     }
     await Supabase.initialize(url: _supabaseUrl, anonKey: _supabaseAnonKey);
-    debugPrint('✅ GEMS: Supabase connected → $_supabaseUrl');
+    debugPrint('✅ GEMS: Supabase connected');
   }
 
   // ── AUTH ─────────────────────────────────────────────────
 
-  static Future<User?> signIn(String email, String password) async {
-    final res = await _db.auth.signInWithPassword(email: email, password: password);
-    return res.user;
+  /// Signs in and VALIDATES that the user's actual role matches
+  /// the role they selected on the login screen.
+  /// Throws a descriptive error if the role doesn't match.
+  static Future<User?> signInWithRoleCheck(
+    String email,
+    String password,
+    String selectedRole,
+  ) async {
+    // 1. Try signing in
+    final AuthResponse res;
+    try {
+      res = await _db.auth.signInWithPassword(
+          email: email, password: password);
+    } on AuthException catch (e) {
+      if (e.message.toLowerCase().contains('invalid login')) {
+        throw Exception('No account found with this email and password.');
+      }
+      if (e.message.toLowerCase().contains('email not confirmed')) {
+        throw Exception(
+            'Please check your email and confirm your account first.');
+      }
+      throw Exception(e.message);
+    }
+
+    final user = res.user;
+    if (user == null) {
+      throw Exception('Sign in failed. Please try again.');
+    }
+
+    // 2. Fetch the actual role from the profiles table
+    //    (more reliable than user_metadata which can be stale)
+    final profile = await _db
+        .from('profiles')
+        .select('role, full_name, faculty_id')
+        .eq('id', user.id)
+        .maybeSingle();
+
+    final actualRole = profile?['role'] as String? ??
+        user.userMetadata?['role'] as String? ?? 'student';
+
+    // 3. Compare — sign out and throw if mismatch
+    if (actualRole != selectedRole) {
+      await _db.auth.signOut();
+      final selectedLabel  = _roleLabel(selectedRole);
+      final actualLabel    = _roleLabel(actualRole);
+      throw Exception(
+          'This account is registered as "$actualLabel", '
+          'not "$selectedLabel". Please select the correct role.');
+    }
+
+    return user;
+  }
+
+  static String _roleLabel(String role) {
+    switch (role) {
+      case 'admin':           return 'University Admin';
+      case 'faculty_officer': return 'Faculty Officer';
+      case 'groundskeeper':   return 'Groundskeeper';
+      default:                return 'Student / Public';
+    }
   }
 
   static Future<void> signUp(
@@ -55,8 +105,9 @@ class SupabaseService {
       password: password,
       data: {
         'full_name': fullName,
-        'role': role,
-        if (facultyId != null && facultyId.isNotEmpty) 'faculty_id': facultyId,
+        'role':      role,
+        if (facultyId != null && facultyId.isNotEmpty)
+          'faculty_id': facultyId,
       },
       emailRedirectTo: kIsWeb ? _webRedirectUrl : null,
     );
@@ -73,14 +124,13 @@ class SupabaseService {
     await _db.auth.updateUser(UserAttributes(password: newPassword));
   }
 
-  static Future<void> signOut() async {
-    await _db.auth.signOut();
-  }
+  static Future<void> signOut() async => _db.auth.signOut();
 
-  static User? get currentUser => isConfigured ? _db.auth.currentUser : null;
+  static User? get currentUser =>
+      isConfigured ? _db.auth.currentUser : null;
 
   static String get currentRole =>
-      currentUser?.userMetadata?['role'] as String? ?? 'groundskeeper';
+      currentUser?.userMetadata?['role'] as String? ?? 'student';
 
   static String get currentFacultyId =>
       currentUser?.userMetadata?['faculty_id'] as String? ?? '';
@@ -91,28 +141,60 @@ class SupabaseService {
         currentUser?.email?.split('@').first ?? 'User';
   }
 
+  static Stream<AuthState> get authStateChanges =>
+      _db.auth.onAuthStateChange;
+
   // ── PROFILE ──────────────────────────────────────────────
 
   static Future<Map<String, dynamic>?> getMyProfile() async {
     final uid = currentUser?.id;
     if (uid == null) return null;
-    final res = await _db.from('profiles').select().eq('id', uid).maybeSingle();
-    return res as Map<String, dynamic>?;
+    return await _db
+        .from('profiles')
+        .select()
+        .eq('id', uid)
+        .maybeSingle() as Map<String, dynamic>?;
   }
 
   static Future<void> updateProfile({required String fullName}) async {
     final uid = currentUser?.id;
     if (uid == null) return;
     await _db.from('profiles').update({
-      'full_name': fullName,
+      'full_name':  fullName,
       'updated_at': DateTime.now().toIso8601String(),
     }).eq('id', uid);
-    await _db.auth.updateUser(UserAttributes(data: {'full_name': fullName}));
+    await _db.auth.updateUser(
+        UserAttributes(data: {'full_name': fullName}));
   }
 
   static Future<List<Map<String, dynamic>>> getAllProfiles() async {
-    final res = await _db.from('profiles').select().order('created_at', ascending: false);
+    final res = await _db
+        .from('profiles')
+        .select()
+        .order('created_at', ascending: false);
     return List<Map<String, dynamic>>.from(res as List);
+  }
+
+  // ── UNIVERSITY SETTINGS (replaces all hardcoded values) ──
+  // Reads from a `university_settings` table (single row).
+  // Columns: total_area_ha (numeric), founded_year (int),
+  //          name (text), campus_count (int)
+  static Future<Map<String, dynamic>> getUniversitySettings() async {
+    try {
+      final res = await _db
+          .from('university_settings')
+          .select()
+          .limit(1)
+          .maybeSingle();
+      if (res != null) return Map<String, dynamic>.from(res as Map);
+    } catch (_) {}
+    // Fallback so app doesn't crash if table doesn't exist yet
+    return {
+      'name':          'Abiola Ajimobi University',
+      'total_area_ha': 47,
+      'founded_year':  2010,
+      'campus_count':  1,
+    };
   }
 
   // ── FACULTIES ────────────────────────────────────────────
@@ -125,16 +207,18 @@ class SupabaseService {
     return List<Map<String, dynamic>>.from(res as List);
   }
 
-  static Future<void> updateFacultyScore(String facultyId, double score) async {
+  static Future<void> updateFacultyScore(
+      String facultyId, double score) async {
     await _db.from('faculties').update({
       'green_health_score': score,
-      'updated_at': DateTime.now().toIso8601String(),
+      'updated_at':         DateTime.now().toIso8601String(),
     }).eq('id', facultyId);
   }
 
   // ── TASKS ────────────────────────────────────────────────
 
-  static Future<List<Map<String, dynamic>>> getTasks({String? facultyId}) async {
+  static Future<List<Map<String, dynamic>>> getTasks(
+      {String? facultyId}) async {
     var query = _db
         .from('maintenance_tasks')
         .select('*, faculties(name, short_name)');
@@ -154,9 +238,10 @@ class SupabaseService {
     });
   }
 
-  static Future<void> updateTaskStatus(String taskId, String status) async {
+  static Future<void> updateTaskStatus(
+      String taskId, String status) async {
     await _db.from('maintenance_tasks').update({
-      'status': status,
+      'status':     status,
       'updated_at': DateTime.now().toIso8601String(),
     }).eq('id', taskId);
   }
@@ -171,7 +256,9 @@ class SupabaseService {
     String? facultyId,
     String? status,
   }) async {
-    var query = _db.from('vegetation_reports').select('*, faculties(name, short_name)');
+    var query = _db
+        .from('vegetation_reports')
+        .select('*, faculties(name, short_name)');
     if (facultyId != null && facultyId.isNotEmpty) {
       query = query.eq('faculty_id', facultyId) as dynamic;
     }
@@ -188,10 +275,10 @@ class SupabaseService {
     required double grassHeightCm,
     required String vegetationType,
     required String condition,
-    required bool nearBuilding,
-    required bool isDrySeason,
+    required bool   nearBuilding,
+    required bool   isDrySeason,
     required double coveragePct,
-    String notes = '',
+    String notes   = '',
     String? photoUrl,
   }) async {
     await _db.from('vegetation_reports').insert({
@@ -212,13 +299,18 @@ class SupabaseService {
     });
   }
 
-  static Future<void> updateVegetationReportStatus(String id, String status) async {
-    await _db.from('vegetation_reports').update({'status': status}).eq('id', id);
+  static Future<void> updateVegetationReportStatus(
+      String id, String status) async {
+    await _db
+        .from('vegetation_reports')
+        .update({'status': status})
+        .eq('id', id);
   }
 
   // ── ISSUE REPORTS ─────────────────────────────────────────
 
-  static Future<List<Map<String, dynamic>>> getIssueReports({String? facultyId}) async {
+  static Future<List<Map<String, dynamic>>> getIssueReports(
+      {String? facultyId}) async {
     var query = _db.from('issue_reports').select('*, faculties(name)');
     if (facultyId != null && facultyId.isNotEmpty) {
       query = query.eq('faculty_id', facultyId) as dynamic;
@@ -236,25 +328,27 @@ class SupabaseService {
     String? photoUrl,
   }) async {
     await _db.from('issue_reports').insert({
-      'faculty_id':   facultyId,
-      'title':        title,
-      'description':  description,
-      'category':     category,
-      'reported_by':  reportedBy,
+      'faculty_id':  facultyId,
+      'title':       title,
+      'description': description,
+      'category':    category,
+      'reported_by': reportedBy,
       if (photoUrl != null) 'photo_url': photoUrl,
-      'status':       'open',
-      'priority':     'medium',
-      'created_at':   DateTime.now().toIso8601String(),
+      'status':      'open',
+      'priority':    'medium',
+      'created_at':  DateTime.now().toIso8601String(),
     });
   }
 
-  static Future<void> updateIssueStatus(String id, String status) async {
+  static Future<void> updateIssueStatus(
+      String id, String status) async {
     await _db.from('issue_reports').update({'status': status}).eq('id', id);
   }
 
   // ── TREE REGISTRY ─────────────────────────────────────────
 
-  static Future<List<Map<String, dynamic>>> getTreeRegistry({String? facultyId}) async {
+  static Future<List<Map<String, dynamic>>> getTreeRegistry(
+      {String? facultyId}) async {
     var query = _db.from('tree_registry').select('*, faculties(name)');
     if (facultyId != null && facultyId.isNotEmpty) {
       query = query.eq('faculty_id', facultyId) as dynamic;
@@ -270,8 +364,12 @@ class SupabaseService {
     });
   }
 
-  static Future<void> updateTreeStatus(String id, String status) async {
-    await _db.from('tree_registry').update({'status': status}).eq('id', id);
+  static Future<void> updateTreeStatus(
+      String id, String status) async {
+    await _db
+        .from('tree_registry')
+        .update({'status': status})
+        .eq('id', id);
   }
 
   // ── MONTHLY REPORTS ───────────────────────────────────────
@@ -287,7 +385,8 @@ class SupabaseService {
 
   // ── ALERTS (combined overdue tasks + open issues) ─────────
 
-  static Future<List<Map<String, dynamic>>> getAlerts({String? facultyId}) async {
+  static Future<List<Map<String, dynamic>>> getAlerts(
+      {String? facultyId}) async {
     final tasks  = await getTasks(facultyId: facultyId);
     final issues = await getIssueReports(facultyId: facultyId);
     final alerts = <Map<String, dynamic>>[];
@@ -304,8 +403,95 @@ class SupabaseService {
     return alerts;
   }
 
-  // ── REALTIME STREAM ───────────────────────────────────────
+  // ── NOTIFICATIONS ─────────────────────────────────────────
 
-  static Stream<AuthState> get authStateChanges =>
-      _db.auth.onAuthStateChange;
+  /// Fetch notifications relevant to the current user.
+  /// Combines:
+  ///   (a) direct (recipient_user_id = me)
+  ///   (b) role-broadcast (recipient_role = my role, no specific user)
+  ///   (c) faculty-scoped (recipient_role = my role, recipient_faculty_id = my faculty)
+  static Future<List<Map<String, dynamic>>> getNotifications(
+      {int limit = 50}) async {
+    final uid       = currentUser?.id;
+    final role      = currentRole;
+    final facultyId = currentFacultyId;
+
+    if (uid == null) return [];
+
+    // Supabase RLS already handles filtering — just select and sort
+    final res = await _db
+        .from('notifications')
+        .select()
+        .order('created_at', ascending: false)
+        .limit(limit);
+
+    return List<Map<String, dynamic>>.from(res as List);
+  }
+
+  /// Count unread notifications for the current user.
+  static Future<int> getUnreadCount() async {
+    final uid = currentUser?.id;
+    if (uid == null) return 0;
+    try {
+      final res = await _db
+          .from('notifications')
+          .select('id')
+          .eq('is_read', false)
+          .count(CountOption.exact);
+      return res.count ?? 0;
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  /// Mark a single notification as read.
+  static Future<void> markNotificationRead(String id) async {
+    await _db
+        .from('notifications')
+        .update({'is_read': true})
+        .eq('id', id);
+  }
+
+  /// Mark ALL notifications for the current user as read.
+  static Future<void> markAllNotificationsRead() async {
+    await _db
+        .from('notifications')
+        .update({'is_read': true})
+        .eq('is_read', false);
+  }
+
+  /// Real-time stream of notifications for this user.
+  /// Reconnects automatically via Supabase Realtime.
+  static RealtimeChannel subscribeToNotifications({
+    required void Function(Map<String, dynamic> payload) onNew,
+  }) {
+    final uid       = currentUser?.id ?? '';
+    final role      = currentRole;
+    final facultyId = currentFacultyId;
+
+    final channel = _db
+        .channel('notifications_$uid')
+        .onPostgresChanges(
+          event:  PostgresChangeEvent.insert,
+          schema: 'public',
+          table:  'notifications',
+          callback: (payload) {
+            final row = payload.newRecord;
+            // Client-side filter to match what RLS does
+            final recUser    = row['recipient_user_id'];
+            final recRole    = row['recipient_role'];
+            final recFaculty = row['recipient_faculty_id'];
+
+            final isForMe = recUser == uid ||
+                (recRole == role &&
+                    (recFaculty == null ||
+                        recFaculty == '' ||
+                        recFaculty == facultyId));
+
+            if (isForMe) onNew(row);
+          },
+        )
+        .subscribe();
+    return channel;
+  }
 }
